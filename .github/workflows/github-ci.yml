@@ -2,12 +2,15 @@
 name: github-continuous-integration
 
 on:
+  push:
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
 
 permissions:
   contents: read
+  security-events: write
 
 jobs:
   build:
@@ -19,17 +22,17 @@ jobs:
 
     steps:
     - name: Harden Runner
-      uses: step-security/harden-runner@eb238b55efaa70779f274895e782ed17c84f2895 # v2.6.1
+      uses: step-security/harden-runner@5c7944e73c4c2a096b17a9cb74d65b6c2bbafbde # v2.9.1
       with:
         egress-policy: audit
 
     - name: Checkout repository
-      uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
       with:
         submodules: 'recursive'
 
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@b374143c1149a9115d881581d29b8390bbcbb59c # v3.22.11
+      uses: github/codeql-action/init@883d8588e56d1753a8a58c1c86e88976f0c23449 # v3.26.3
       with:
         languages: "cpp"
 
@@ -39,15 +42,56 @@ jobs:
         $path = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
         & $path\MSBuild\Current\Bin\amd64\msbuild.exe /m /p:Configuration="${{matrix.configuration}}" /p:Platform="${{matrix.platform}}" mfcmapi.sln
 
-    - name: Run tests
-      uses: microsoft/vstest-action@6ef4755ea07a3144e3da36f10d76187086eee5e6 # v1.0.0
+    - name: Find vstest.console.exe
+      run: |
+        $VSDevTestCmd = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere" -latest -prerelease -products * -find Common7\IDE\Extensions\TestPlatform\vstest.console.exe
+        if (!$VSDevTestCmd) { exit 1 }
+        echo "Using VSDevTestCmd: ${VSDevTestCmd}"
+        Add-Content $env:GITHUB_ENV "VSDevTestCmd=$VSDevTestCmd"
+
+    - name: MFCMAPI UnitTests
+      run: cmd /c "$env:VSDevTestCmd" /Parallel /EnableCodeCoverage /Logger:trx "${{github.workspace}}\\bin\\${{matrix.platform}}\\UnitTest\\${{matrix.configuration}}\\UnitTest.dll"
+
+    # - name: Upload Event File
+    #   uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+    #   with:
+    #     name: Event File (${{ matrix.platform }} - ${{ matrix.configuration }})
+    #     path: ${{ github.event_path }}
+ 
+    - name: Upload Test Result Files
+      uses: actions/upload-artifact@834a144ee995460fba8ed112a2fc961b36a5ec5a # v4.3.6
+      if: always()
       with:
-        testAssembly: '**\\UnitTest.dll'
-        searchFolder: "${{ github.workspace }}\\bin\\${{matrix.platform}}\\UnitTest\\${{matrix.configuration}}"
-        runInParallel: true
-        # codeCoverageEnabled: true
+        name: Test Results (${{ matrix.platform }} - ${{ matrix.configuration }})
+        path: ${{github.workspace}}/**/TestResults/**/*
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@b374143c1149a9115d881581d29b8390bbcbb59c # v3.22.11
+      uses: github/codeql-action/analyze@883d8588e56d1753a8a58c1c86e88976f0c23449 # v3.26.3
       with:
         category: "/language:cpp"
+
+  publish-test-results:
+    name: "Publish Tests Results"
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+      # only needed unless run with comment_mode: off
+      pull-requests: write
+    if: always()
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@5c7944e73c4c2a096b17a9cb74d65b6c2bbafbde # v2.9.1
+        with:
+          egress-policy: audit
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          path: artifacts
+
+      - name: Publish Test Results
+        uses: EnricoMi/publish-unit-test-result-action@567cc7f8dcea3eba5da355f6ebc95663310d8a07 # v2.17.0
+        with:
+          files: "artifacts/**/*.trx"
